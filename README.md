@@ -7,13 +7,14 @@ Just reference `BluConfig.dll` in your project and add the namespace `using BluC
 Because the `ConfigHandler.Load()` will automatically put the information into `MyConfig`, just assign its field values to whatever variables you need changed.
 For `ConfigHandler.Save()`, make sure to assign values to the fields in `MyConfig` before you call `ConfigHandler.Save()`.<br/><br/>
 
+Config fields are no longer marked with attributes, as `ConfigHandler` just auto-detects for the supported types: `int`, `float`, `double`, `bool`, and/or `string`.<br/><br/>
+
 Also,
 - `ConfigHandler.Setup()` and `ConfigHandler.Load()` should be called at the start of your program.
 - `ConfigHandler.Save()` should be called when your program is closing.
 ```csharp
-using BluConfig;
-
 using System.Windows.Forms;
+using BluConfig;
 
 namespace MyProgram
 {
@@ -22,16 +23,9 @@ namespace MyProgram
         [Config]
         private static class MyConfig
         {
-            [Number]
             public static int width;
-            
-            [Number]
             public static int height;
-            
-            [Text]
             public static string text;
-            
-            [Number]
             public static bool topmost;
         }
         
