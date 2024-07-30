@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Xml;
+
+using Newtonsoft.Json.Linq;
 
 namespace BluConfig
 {
@@ -12,16 +15,28 @@ namespace BluConfig
 	public static class ConfigHandler
 	{
 		private static bool _init = false;
-		private static Type _conf = null;
-		private static Dictionary<string, FieldInfo> _configs = new Dictionary<string, FieldInfo>();
+		private static string _mainConf = "";
+		private static Format _mainFmt = 0;
+		private static Dictionary<string, Format> _multiFmt = new Dictionary<string, Format>();
+		private static Dictionary<string, FieldInfo> _main = new Dictionary<string, FieldInfo>();
+		private static Dictionary<string, Dictionary<string, FieldInfo>> _multi = new Dictionary<string, Dictionary<string, FieldInfo>>();
 
-		private static readonly Type[] _cattrs = new Type[] { typeof(NumberAttribute), typeof(TextAttribute), typeof(BoolAttribute) };
 		private static readonly Dictionary<string, bool> _bool = new Dictionary<string, bool> { { "false", false }, { "true", true } };
+		private static readonly Dictionary<bool, string> _boolr = new Dictionary<bool, string> { { false, "false" }, { true, "true" } };
 		private static readonly string _file = Environment.CurrentDirectory + "\\config";
 
-		private static Type[] GetTypeAttr(Type[] Types, Type AttrType)
+		static ConfigHandler()
 		{
-			return Types.Where(t => t.IsDefined(AttrType)).ToArray();
+			AppDomain.CurrentDomain.AssemblyResolve += (_, e) =>
+			{
+				using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("BluConfig.Newtonsoft.Json.dll"))
+				{
+					byte[] buffer = new byte[s.Length];
+					s.Read(buffer, 0, buffer.Length);
+
+					return Assembly.Load(buffer);
+				}
+			};
 		}
 
 		/// <summary>
@@ -30,37 +45,69 @@ namespace BluConfig
 		/// <exception cref="InvalidOperationException"></exception>
 		public static void Setup()
 		{
-			Type[] types = Assembly.GetCallingAssembly().GetTypes();
-			Type[] confs = GetTypeAttr(types, typeof(ConfigAttribute));
+			if (_init) throw new InvalidOperationException("ConfigHandler already initialized configuration(s).");
 
-			if (confs.Length == 0) throw new InvalidOperationException("No config class was found.");
-			if (confs.Length > 1) throw new InvalidOperationException("Only one config class can be marked.");
-			_conf = confs[0];
+			Type[] confs = Assembly.GetCallingAssembly().GetTypes()
+				.Where(t => t.IsDefined(typeof(ConfigAttribute))).ToArray();
+			Type[] mains = confs.Where(c => string.IsNullOrEmpty(c.GetCustomAttribute<ConfigAttribute>().File)).ToArray();
 
-			if (!(_conf.IsAbstract && _conf.IsSealed)) throw new InvalidOperationException("Config class must be static.");
-			if (_conf.GetFields(BindingFlags.Public | BindingFlags.Static).Count() == 0)
-				throw new InvalidOperationException("Config class does not contain any fields.");
-			foreach (FieldInfo fl in _conf.GetFields(BindingFlags.Public | BindingFlags.Static))
+			if (mains.Length > 1)
+				throw new InvalidOperationException("Can only have one main config class.");
+			else if (confs.GroupBy(c => c.GetCustomAttribute<ConfigAttribute>().File).Any(grp => grp.Count() > 1))
+				throw new InvalidOperationException("Can only have one config class per file.");
+			else if (mains.Length > 0 && confs.Count(c => !string.IsNullOrEmpty(c.GetCustomAttribute<ConfigAttribute>().File)) > 0)
+				throw new InvalidOperationException("Can only have one main config class or multiple unique config files.");
+			else if (confs.Count(c => !(c.IsAbstract && c.IsSealed)) > 0)
+				throw new InvalidOperationException($"'{confs.Where(c => !(c.IsAbstract && c.IsSealed)).First().Name}' must be static.");
+
+			Type[] supported = new Type[] { typeof(int), typeof(float), typeof(double), typeof(string), typeof(bool) };
+			if (mains.Length == 1)
 			{
-				if (fl.CustomAttributes.Count(ca => _cattrs.Contains(ca.AttributeType)) == 0)
-					throw new InvalidOperationException($"{_conf.Name}.{fl.Name} is not marked as a config field.");
-				else if (fl.CustomAttributes.Count(ca => _cattrs.Contains(ca.AttributeType)) > 1)
-					throw new InvalidOperationException($"{_conf.Name}.{fl.Name} cannot have more than one config type.");
+				Type main = mains[0];
+				FieldInfo[] fields = main.GetFields(BindingFlags.Public | BindingFlags.Static);
 
-				_configs[fl.Name] = fl;
+				if (fields.Count(fl => !supported.Contains(fl.FieldType)) > 0)
+					throw new InvalidOperationException($"'{main.Name}.{fields.Where(fl => !supported.Contains(fl.FieldType)).First().Name}' must be a supported type: int, float, double, string, or bool.");
+
+				_mainFmt = main.GetCustomAttribute<ConfigAttribute>().Format;
+				foreach (FieldInfo fl in fields) _main.Add(fl.Name, fl);
+				_mainConf = "config";
+			}
+			else
+			{
+				Type[] named = confs.Where(c => !string.IsNullOrEmpty(c.GetCustomAttribute<ConfigAttribute>().File)).ToArray();
+
+				if (named.Length > 1) foreach (Type nm in named)
+					{
+						Dictionary<string, FieldInfo> configs = new Dictionary<string, FieldInfo>();
+						FieldInfo[] fields = nm.GetFields(BindingFlags.Public | BindingFlags.Static);
+
+						if (fields.Count(fl => !supported.Contains(fl.FieldType)) > 0)
+							throw new InvalidOperationException($"'{nm.Name}.{fields.Where(fl => !supported.Contains(fl.FieldType)).First().Name}' must be a supported type: int, float, double, string, or bool.");
+
+						foreach (FieldInfo fl in fields) configs.Add(fl.Name, fl);
+
+						ConfigAttribute attr = nm.GetCustomAttribute<ConfigAttribute>();
+						_multiFmt.Add(attr.File, attr.Format);
+						_multi.Add(attr.File, configs);
+					}
+				else if (named.Length == 1)
+				{
+					Type nm = named[0];
+					FieldInfo[] fields = nm.GetFields(BindingFlags.Public | BindingFlags.Static);
+
+					if (fields.Count(fl => !supported.Contains(fl.FieldType)) > 0)
+						throw new InvalidOperationException($"'{nm.Name}.{fields.Where(fl => !supported.Contains(fl.FieldType)).First().Name}' must be a supported type: int, float ,double, string, or bool.");
+					
+					foreach (FieldInfo fl in fields) _main.Add(fl.Name, fl);
+					ConfigAttribute attr = nm.GetCustomAttribute<ConfigAttribute>();
+					_mainFmt = attr.Format;
+					_mainConf = attr.File;
+				}
 			}
 
-			if (!File.Exists(_file)) File.WriteAllLines(_file, _configs.Select(kvp =>
-			{
-				Type attr = kvp.Value.CustomAttributes.First().AttributeType;
-				string val = null;
-
-				if (attr == _cattrs[0]) val = "0";
-				else if (attr == _cattrs[1]) val = "";
-				else if (attr == _cattrs[2]) val = "false";
-
-				return $"{kvp.Key} = {val}";
-			}));
+			if (_main.Count > 0 && !File.Exists(_mainConf)) File.Create(_mainConf).Close();
+			else foreach (string conf in _multi.Keys) if (!File.Exists(conf)) File.Create(conf).Close();
 
 			_init = true;
 		}
@@ -73,21 +120,119 @@ namespace BluConfig
 		{
 			if (!_init) throw new InvalidOperationException("Config must be initialized first. Call 'ConfigHandler.Setup()'");
 
-			Dictionary<string, string> vals = File.ReadAllLines(_file)
-				.ToDictionary(ln => ln.Substring(0, ln.IndexOf(' ')), ln => ln.Substring(ln.IndexOf('=') + 2));
-
-			foreach (string conf in _configs.Keys)
+			if (_main.Count > 0)
 			{
-				if (_configs[conf].CustomAttributes.Count(ca => ca.AttributeType == _cattrs[0]) == 1)
+				switch (_mainFmt)
 				{
-					if (_configs[conf].FieldType == typeof(int)) _configs[conf].SetValue(null, int.Parse(vals[conf]));
-					else if (_configs[conf].FieldType == typeof(float)) _configs[conf].SetValue(null, float.Parse(vals[conf]));
-					else if (_configs[conf].FieldType == typeof(double)) _configs[conf].SetValue(null, double.Parse(vals[conf]));
+					case Format.Blu:
+						{
+							Dictionary<string, string> values = File.ReadAllLines(_mainConf)
+								.ToDictionary(k => k.Substring(0, k.IndexOf(' ')), v => v.Substring(v.IndexOf('=') + 2));
+							foreach (string field in values.Keys)
+							{
+								if (_main[field].FieldType == typeof(int))
+									_main[field].SetValue(null, int.Parse(values[field]));
+								else if (_main[field].FieldType == typeof(float))
+									_main[field].SetValue(null, float.Parse(values[field]));
+								else if (_main[field].FieldType == typeof(double))
+									_main[field].SetValue(null, double.Parse(values[field]));
+								else if (_main[field].FieldType == typeof(string))
+									_main[field].SetValue(null, values[field]);
+								else if (_main[field].FieldType == typeof(bool))
+									_main[field].SetValue(null, _bool[values[field]]);
+							}
+						}
+						break;
+					case Format.JSON:
+						{
+							JObject values = JObject.Parse(File.ReadAllText(_mainConf));
+							foreach (JProperty value in values.Properties())
+							{
+								if (int.TryParse(value.Value<string>(), out _))
+									_main[value.Name].SetValue(null, value.Value<int>());
+								else if (float.TryParse(value.Value<string>(), out _))
+									_main[value.Name].SetValue(null, value.Value<float>());
+								else if (double.TryParse(value.Value<string>(), out _))
+									_main[value.Name].SetValue(null, value.Value<double>());
+								else if (_bool.ContainsKey(value.Value<string>()))
+									_main[value.Name].SetValue(null, value.Value<bool>());
+								else _main[value.Name].SetValue(null, value.Value<string>());
+							}
+						}
+						break;
+					case Format.XML:
+						{
+							XmlDocument values = new XmlDocument(); values.Load(_mainConf);
+							XmlNodeList nodes = values.SelectNodes("/config/field");
+
+							foreach (XmlNode field in nodes)
+							{
+								string name = field.Attributes["name"].Value;
+								string value = field.Attributes["value"].Value;
+
+								if (int.TryParse(value, out _)) _main[name].SetValue(null, int.Parse(value));
+								else if (float.TryParse(value, out _)) _main[name].SetValue(null, float.Parse(value));
+								else if (double.TryParse(value, out _)) _main[name].SetValue(null, double.Parse(value));
+								else if (_bool.ContainsKey(value)) _main[name].SetValue(null, _bool[value]);
+								else _main[name].SetValue(null, value);
+							}
+						}
+						break;
 				}
-				else if (_configs[conf].CustomAttributes.Count(ca => ca.AttributeType == _cattrs[1]) == 1)
-					_configs[conf].SetValue(null, vals[conf]);
-				else if (_configs[conf].CustomAttributes.Count(ca => ca.AttributeType == _cattrs[2]) == 1)
-					_configs[conf].SetValue(null, _bool[vals[conf]]);
+			}
+			else
+			{
+				foreach (string conf in _multi.Keys)
+				{
+					switch (_multiFmt[conf])
+					{
+						case Format.Blu:
+							{
+								Dictionary<string, string> values = File.ReadAllLines(conf)
+									.ToDictionary(k => k.Substring(0, k.IndexOf(' ')), v => v.Substring(v.IndexOf('=') + 2));
+								foreach (string field in values.Keys)
+								{
+									if (int.TryParse(values[field], out _)) _multi[conf][field].SetValue(null, int.Parse(values[field]));
+									else if (float.TryParse(values[field], out _)) _multi[conf][field].SetValue(null, float.Parse(values[field]));
+									else if (double.TryParse(values[field], out _)) _multi[conf][field].SetValue(null, double.Parse(values[field]));
+									else if (_bool.ContainsKey(values[field])) _multi[conf][field].SetValue(null, _bool[values[field]]);
+									else _multi[conf][field].SetValue(null, values[field]);
+								}
+							}
+							break;
+						case Format.JSON:
+							{
+								JObject values = JObject.Parse(File.ReadAllText(conf));
+								foreach (JProperty field in values.Properties())
+								{
+									if (int.TryParse(field.Value<string>(), out _)) _multi[conf][field.Name].SetValue(null, int.Parse(field.Value<string>()));
+									else if (float.TryParse(field.Value<string>(), out _)) _multi[conf][field.Name].SetValue(null, float.Parse(field.Value<string>()));
+									else if (double.TryParse(field.Value<string>(), out _)) _multi[conf][field.Name].SetValue(null, double.Parse(field.Value<string>()));
+									else if (_bool.ContainsKey(field.Value<string>())) _multi[conf][field.Name].SetValue(null, _bool[field.Value<string>()]);
+									else _multi[conf][field.Name].SetValue(null, field.Value<string>());
+								}
+							}
+							break;
+						case Format.XML:
+							{
+								XmlDocument values = new XmlDocument();
+								XmlNodeList nodes = values.SelectNodes("/config/field");
+
+								foreach (XmlNode field in nodes)
+								{
+									string name = field.Attributes["name"].Value;
+									string value = field.Attributes["value"].Value;
+
+									if (int.TryParse(value, out _)) _multi[conf][name].SetValue(null, int.Parse(value));
+									else if (float.TryParse(value, out _)) _multi[conf][name].SetValue(null, float.Parse(value));
+									else if (double.TryParse(value, out _)) _multi[conf][name].SetValue(null, double.Parse(value));
+									else if (_bool.ContainsKey(value)) _multi[conf][name].SetValue(null, _bool[value]);
+									else _multi[conf][name].SetValue(null, value);
+								}
+							}
+							break;
+					}
+				}
 			}
 		}
 
@@ -99,12 +244,85 @@ namespace BluConfig
 		{
 			if (!_init) throw new InvalidOperationException("Config must be initialized first. Call 'ConfigHandler.Setup()'");
 
-			File.WriteAllLines(_file, _configs.Select(kvp =>
+			if (_main.Count > 0)
 			{
-				if (kvp.Value.FieldType == typeof(bool))
-					return $"{kvp.Key} = {kvp.Value.GetValue(null).ToString().ToLower()}";
-				else return $"{kvp.Key} = {kvp.Value.GetValue(null)}";
-			}));
+				switch (_mainFmt)
+				{
+					case Format.Blu:
+						File.WriteAllLines(_mainConf, _main.Select(cf => $"{cf.Key} = {(cf.Value.FieldType == typeof(bool) ? _boolr[(bool)cf.Value.GetValue(null)] : cf.Value.GetValue(null))}"));
+						break;
+					case Format.JSON:
+						{
+							JObject values = new JObject();
+							foreach (var (Name, Value) in _main.Select(kv => (Name: kv.Key, Value: kv.Value.GetValue(null))))
+								values.Add(Name, Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+							File.WriteAllText(_mainConf, values.ToString().Replace("  ", "\t"));
+						}
+						break;
+					case Format.XML:
+						{
+							XmlDocument values = new XmlDocument();
+							XmlDeclaration decl = values.CreateXmlDeclaration("1.0", "UTF-8", null);
+							XmlElement root = values.DocumentElement;
+							values.InsertBefore(decl, root);
+
+							XmlElement config = values.CreateElement("config");
+							values.AppendChild(config);
+
+							foreach (var (Name, Value) in _main.Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+							{
+								XmlElement fieldEl = values.CreateElement("field");
+								fieldEl.SetAttribute("name", Name);
+								fieldEl.SetAttribute("value", Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+								config.AppendChild(fieldEl);
+							}
+
+							values.Save(_mainConf);
+						}
+						break;
+				}
+			}
+			else
+			{
+				foreach (string conf in _multi.Keys)
+				{
+					switch (_multiFmt[conf])
+					{
+						case Format.Blu:
+							File.WriteAllLines(conf, _multi[conf].Select(cf => $"{cf.Key} = {(cf.Value.FieldType == typeof(bool) ? _boolr[(bool)cf.Value.GetValue(null)] : cf.Value.GetValue(null).ToString())}"));
+							break;
+						case Format.JSON:
+							{
+								JObject values = new JObject();
+								foreach (var (Name, Value) in _multi[conf].Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+									values.Add(Name, Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+								File.WriteAllText(conf, values.ToString().Replace("  ", "\t"));
+							}
+							break;
+						case Format.XML:
+							{
+								XmlDocument values = new XmlDocument();
+								XmlDeclaration decl = values.CreateXmlDeclaration("1.0", "UTF-8", null);
+								XmlElement root = values.DocumentElement;
+								values.InsertBefore(decl, root);
+
+								XmlElement config = values.CreateElement("config");
+								values.AppendChild(config);
+
+								foreach (var (Name, Value) in _multi[conf].Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+								{
+									XmlElement fieldEl = values.CreateElement("field");
+									fieldEl.SetAttribute("name", Name);
+									fieldEl.SetAttribute("value", Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+									config.AppendChild(fieldEl);
+								}
+
+								values.Save(conf);
+							}
+							break;
+					}
+				}
+			}
 		}
 	}
 }

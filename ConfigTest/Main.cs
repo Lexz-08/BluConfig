@@ -1,31 +1,52 @@
-﻿using System.Drawing;
-using System.Windows.Forms;
+﻿using System.Windows.Forms;
+
+using BluConfig;
 
 namespace ConfigTest
 {
 	public partial class Main : Form
 	{
+		[Config("first")]
+		private static class Cfg
+		{
+			public static int Number;
+			public static string Text;
+			public static bool Boolean;
+		}
+
+		[Config("second")]
+		private static class Cfg2
+		{
+			public static int Number;
+			public static string Text;
+			public static bool Boolean;
+		}
+
 		public Main()
 		{
 			InitializeComponent();
 
-			console.GotFocus += (_, __) => label1.Focus();
+			ConfigHandler.Setup();
+			ConfigHandler.Load();
+
+			cfg_Number.Value = Cfg.Number;
+			cfg_Text.Text = Cfg.Text;
+			cfg_Boolean.Checked = Cfg.Boolean;
+			cfg_Number2.Value = Cfg2.Number;
+			cfg_Text2.Text = Cfg2.Text;
+			cfg_Boolean2.Checked = Cfg2.Boolean;
+
+			cfg_Save.Click += (_, __) =>
+			{
+				Cfg.Number = (int)cfg_Number.Value;
+				Cfg.Text = cfg_Text.Text;
+				Cfg.Boolean = cfg_Boolean.Checked;
+				Cfg2.Number = (int)cfg_Number2.Value;
+				Cfg2.Text = cfg_Text2.Text;
+				Cfg2.Boolean = cfg_Boolean2.Checked;
+
+				ConfigHandler.Save();
+			};
 		}
-
-		private void log(object value, Color c)
-		{
-			string v = $"{value}\n";
-
-			console.AppendText(v);
-			console.SelectionStart = console.TextLength - v.Length;
-			console.SelectionLength = v.Length;
-			console.SelectionColor = c;
-			console.SelectionStart = console.TextLength;
-			console.SelectionLength = 0;
-		}
-
-		private void info(object value) => log(value, Color.LightGray);
-		private void err(object value) => log(value, Color.OrangeRed);
-		private void warn(object value) => log(value, Color.Goldenrod);
 	}
 }
