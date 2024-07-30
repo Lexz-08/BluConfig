@@ -106,8 +106,86 @@ namespace BluConfig
 				}
 			}
 
-			if (_main.Count > 0 && !File.Exists(_mainConf)) File.Create(_mainConf).Close();
-			else foreach (string conf in _multi.Keys) if (!File.Exists(conf)) File.Create(conf).Close();
+			if (_main.Count > 0 && !File.Exists(_mainConf))
+			{
+				switch (_mainFmt)
+				{
+					case Format.Blu:
+						File.WriteAllLines(_mainConf, _main.Select(cf => $"{cf.Key} = {(cf.Value.FieldType == typeof(bool) ? _boolr[(bool)cf.Value.GetValue(null)] : cf.Value.GetValue(null))}"));
+						break;
+					case Format.JSON:
+						{
+							JObject values = new JObject();
+							foreach (var (Name, Value) in _main.Select(kv => (Name: kv.Key, Value: kv.Value.GetValue(null))))
+								values.Add(Name, Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+							File.WriteAllText(_mainConf, values.ToString().Replace("  ", "\t"));
+						}
+						break;
+					case Format.XML:
+						{
+							XmlDocument values = new XmlDocument();
+							XmlDeclaration decl = values.CreateXmlDeclaration("1.0", "UTF-8", null);
+							XmlElement root = values.DocumentElement;
+							values.InsertBefore(decl, root);
+
+							XmlElement config = values.CreateElement("config");
+							values.AppendChild(config);
+
+							foreach (var (Name, Value) in _main.Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+							{
+								XmlElement fieldEl = values.CreateElement("field");
+								fieldEl.SetAttribute("name", Name);
+								fieldEl.SetAttribute("value", Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+								config.AppendChild(fieldEl);
+							}
+
+							values.Save(_mainConf);
+						}
+						break;
+				}
+			}
+			else
+			{
+				foreach (string conf in _multi.Keys)
+				{
+					if (!File.Exists(conf))
+						switch (_multiFmt[conf])
+						{
+							case Format.Blu:
+								File.WriteAllLines(conf, _multi[conf].Select(cf => $"{cf.Key} = {(cf.Value.FieldType == typeof(bool) ? _boolr[(bool)cf.Value.GetValue(null)] : cf.Value.GetValue(null).ToString())}"));
+								break;
+							case Format.JSON:
+								{
+									JObject values = new JObject();
+									foreach (var (Name, Value) in _multi[conf].Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+										values.Add(Name, Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+									File.WriteAllText(conf, values.ToString().Replace("  ", "\t"));
+								}
+								break;
+							case Format.XML:
+								{
+									XmlDocument values = new XmlDocument();
+									XmlDeclaration decl = values.CreateXmlDeclaration("1.0", "UTF-8", null);
+									XmlElement root = values.DocumentElement;
+									values.InsertBefore(decl, root);
+
+									XmlElement config = values.CreateElement("config");
+									values.AppendChild(config);
+
+									foreach (var (Name, Value) in _multi[conf].Select(cf => (Name: cf.Key, Value: cf.Value.GetValue(null))))
+									{
+										XmlElement fieldEl = values.CreateElement("field");
+										fieldEl.SetAttribute("name", Name);
+										fieldEl.SetAttribute("value", Value.GetType() == typeof(bool) ? _boolr[(bool)Value] : Value.ToString());
+										config.AppendChild(fieldEl);
+									}
+
+									values.Save(conf);
+								}
+								break;
+						}
+				}
+			}
 
 			_init = true;
 		}
